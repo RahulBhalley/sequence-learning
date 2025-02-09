@@ -639,30 +639,36 @@ def load_checkpoint(path: str,
                    optimizer: Optional[optim.Optimizer] = None,
                    scheduler: Optional[Any] = None) -> dict:
     """Load checkpoint with enhanced information."""
-    checkpoint = torch.load(path)
-    model.load_state_dict(checkpoint['model_state_dict'])
+    # Load checkpoint to CPU first to avoid device mismatch
+    checkpoint = torch.load(path, map_location='cpu')
+    
+    # Move model state dict to the correct device before loading
+    model_state = {k: v.to(device) for k, v in checkpoint['model_state_dict'].items()}
+    model.load_state_dict(model_state)
     
     if optimizer is not None:
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        # Ensure the learning rate is correctly restored
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = checkpoint.get('learning_rate', param_group['lr'])
+        # Move optimizer state to correct device
+        optimizer_state = checkpoint['optimizer_state_dict']
+        for state in optimizer_state['state'].values():
+            for k, v in state.items():
+                if isinstance(v, torch.Tensor):
+                    state[k] = v.to(device)
+        optimizer.load_state_dict(optimizer_state)
     
-    if scheduler is not None:
-        if checkpoint.get('scheduler_state_dict') is not None:
-            try:
-                scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-            except Exception as e:
-                print(f"Warning: Could not load scheduler state: {e}")
-                # Reconstruct scheduler state if possible
-                if isinstance(scheduler, NoamLRScheduler):
-                    scheduler_config = checkpoint.get('scheduler_config', {})
-                    if scheduler_config:
-                        scheduler._step = scheduler_config.get('step', 0)
-                        scheduler._rate = scheduler_config.get('last_lr', scheduler._rate)
-                        scheduler.warmup_steps = scheduler_config.get('warmup_steps', scheduler.warmup_steps)
-                        scheduler.factor = scheduler_config.get('factor', scheduler.factor)
-                        scheduler.d_model = scheduler_config.get('d_model', scheduler.d_model)
+    if scheduler is not None and checkpoint.get('scheduler_state_dict') is not None:
+        try:
+            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        except Exception as e:
+            print(f"Warning: Could not load scheduler state: {e}")
+            # Reconstruct scheduler state if possible
+            if isinstance(scheduler, NoamLRScheduler):
+                scheduler_config = checkpoint.get('scheduler_config', {})
+                if scheduler_config:
+                    scheduler._step = scheduler_config.get('step', 0)
+                    scheduler._rate = scheduler_config.get('last_lr', scheduler._rate)
+                    scheduler.warmup_steps = scheduler_config.get('warmup_steps', scheduler.warmup_steps)
+                    scheduler.factor = scheduler_config.get('factor', scheduler.factor)
+                    scheduler.d_model = scheduler_config.get('d_model', scheduler.d_model)
     
     return checkpoint
 
