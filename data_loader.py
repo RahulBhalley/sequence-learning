@@ -173,7 +173,7 @@ class ShakespeareDataLoader:
         return np.array(sequences), np.array(targets)
     
     def get_batch(self, sequences: np.ndarray, targets: np.ndarray, batch_idx: int) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
-        """Create batches with memory optimization for MPS."""
+        """Create batches with memory optimization."""
         try:
             # Get batch data
             batch_sequences = sequences[batch_idx:batch_idx + self.config.batch_size]
@@ -185,16 +185,18 @@ class ShakespeareDataLoader:
             
             if self.config.token_type == TokenType.BPE:
                 # For BPE, directly use token indices without one-hot encoding
-                # First create tensors on CPU
+                # Create tensors on CPU first
                 x = torch.tensor(batch_sequences, dtype=torch.long)
                 y = torch.tensor(batch_targets.reshape(-1), dtype=torch.long)
-                # Then move to target device
+                
+                # Move to device
                 x = x.to(self.device)
                 y = y.to(self.device)
+                
                 return x, y
             else:
                 # For character/word tokens, use one-hot encoding
-                # Create tensor on CPU first
+                # Create tensors on CPU first
                 x = torch.zeros(
                     batch_sequences.shape[0], 
                     batch_sequences.shape[1], 
@@ -202,16 +204,17 @@ class ShakespeareDataLoader:
                     dtype=torch.float32
                 )
                 
-                # Fill one-hot tensor efficiently on CPU
+                # Fill one-hot tensor efficiently
                 for i in range(batch_sequences.shape[0]):
                     x[i, range(batch_sequences.shape[1]), batch_sequences[i]] = 1
                 
-                # Create target tensor on CPU
+                # Create target tensor
                 y = torch.tensor(batch_targets.reshape(-1), dtype=torch.long)
                 
-                # Move both tensors to target device
+                # Move both tensors to device
                 x = x.to(self.device)
                 y = y.to(self.device)
+                
                 return x, y
             
         except Exception as e:

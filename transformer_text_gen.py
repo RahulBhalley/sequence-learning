@@ -286,7 +286,7 @@ def generate_square_subsequent_mask(sz: int, batch_size: int = 1, num_heads: int
         num_heads: number of attention heads
     """
     if sz == 1:  # Special case for single token
-        return torch.zeros(batch_size * num_heads, 1, 1, device=device)
+        return torch.zeros(batch_size * num_heads, 1, 1).to(device)
     
     # Create base mask
     mask = (torch.triu(torch.ones(sz, sz)) == 1).transpose(0, 1)
@@ -295,7 +295,10 @@ def generate_square_subsequent_mask(sz: int, batch_size: int = 1, num_heads: int
     # Expand for batch size and number of heads
     mask = mask.unsqueeze(0).expand(batch_size * num_heads, -1, -1)
     
-    return mask.to(device)
+    # Move to device
+    mask = mask.to(device)
+    
+    return mask
 
 def generate_text(model: TransformerModel, 
                  data_loader: ShakespeareDataLoader,
