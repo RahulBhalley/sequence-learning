@@ -183,25 +183,33 @@ class ShakespeareDataLoader:
             
             if self.config.token_type == TokenType.BPE:
                 # For BPE, directly use token indices without one-hot encoding
-                x = torch.tensor(batch_sequences, dtype=torch.long).to(self.device)
-                y = torch.tensor(batch_targets.reshape(-1), dtype=torch.long).to(self.device)
+                # First create tensors on CPU
+                x = torch.tensor(batch_sequences, dtype=torch.long)
+                y = torch.tensor(batch_targets.reshape(-1), dtype=torch.long)
+                # Then move to target device
+                x = x.to(self.device)
+                y = y.to(self.device)
                 return x, y
             else:
-                # For character/word tokens, use one-hot encoding as before
+                # For character/word tokens, use one-hot encoding
+                # Create tensor on CPU first
                 x = torch.zeros(
                     batch_sequences.shape[0], 
                     batch_sequences.shape[1], 
                     self.info.vocab_size, 
-                    dtype=torch.float32  # MPS works better with float32
+                    dtype=torch.float32
                 )
                 
                 # Fill one-hot tensor efficiently on CPU
                 for i in range(batch_sequences.shape[0]):
                     x[i, range(batch_sequences.shape[1]), batch_sequences[i]] = 1
                 
-                # Transfer to MPS device
+                # Create target tensor on CPU
+                y = torch.tensor(batch_targets.reshape(-1), dtype=torch.long)
+                
+                # Move both tensors to target device
                 x = x.to(self.device)
-                y = torch.tensor(batch_targets.reshape(-1), dtype=torch.long).to(self.device)
+                y = y.to(self.device)
                 return x, y
             
         except Exception as e:
