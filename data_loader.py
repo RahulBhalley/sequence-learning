@@ -13,7 +13,9 @@ import tiktoken
 
 def clear_memory():
     """Clear memory cache and run garbage collection."""
-    if torch.backends.mps.is_available():
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    elif torch.backends.mps.is_available():
         # MPS doesn't have explicit cache clearing like CUDA
         # but we can force synchronization
         torch.mps.synchronize()

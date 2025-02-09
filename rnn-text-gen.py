@@ -151,6 +151,12 @@ def generate_text(model: RNNModel,
             # Sample from the distribution
             current_idx = torch.multinomial(probs, 1).item()
             
+            # Ensure synchronization before decoding
+            if device.type == 'cuda':
+                torch.cuda.synchronize()
+            elif device.type == 'mps':
+                torch.mps.synchronize()
+            
             # Decode and print the new token immediately
             new_token = data_loader.decode_tokens([current_idx])
             print(new_token, end='', flush=True)
