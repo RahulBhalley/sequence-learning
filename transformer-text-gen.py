@@ -17,12 +17,22 @@ from torch.utils.tensorboard import SummaryWriter
 import gc
 import argparse
 
-# Set device
-device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
-print(f"Using device: {device}")
+def get_available_devices():
+    """Get list of available devices for argparse choices"""
+    devices = ['cpu']
+    if torch.cuda.is_available():
+        devices.append('cuda')
+    if torch.backends.mps.is_available():
+        devices.append('mps')
+    return devices
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train a Transformer model on Shakespeare text')
+    
+    # Device
+    available_devices = get_available_devices()
+    parser.add_argument('--device', type=str, default='cpu', choices=available_devices,
+                       help='Device to use for training (cpu/cuda/mps)')
     
     # Model architecture
     parser.add_argument('--d_model', type=int, default=512, help='Model dimension')
@@ -48,7 +58,13 @@ def parse_args():
     # Other parameters
     parser.add_argument('--save_dir', type=str, default='model_comparison', help='Directory to save models')
     
-    return parser.parse_args()
+    args = parser.parse_args()
+    
+    # Validate device
+    if args.device not in available_devices:
+        parser.error(f"Device {args.device} is not available. Available devices: {available_devices}")
+    
+    return args
 
 def clear_memory():
     """Clear memory cache and run garbage collection."""
@@ -1034,6 +1050,9 @@ def compare_models(data_config: DataConfig,
 def main():
     """Main function to run the training"""
     args = parse_args()
+    
+    # Set device
+    device = torch.device(args.device)
     print(f"Using device: {device}")
     
     # Data configuration
