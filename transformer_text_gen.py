@@ -302,7 +302,7 @@ def generate_text(model: TransformerModel,
                  start_text: Optional[str] = None,
                  length: int = 500,
                  temperature: float = 0.8) -> None:
-    """Generate text using the trained model with MPS optimization and KV caching"""
+    """Generate text using the trained model with device-appropriate optimization"""
     model.eval()
     
     try:
@@ -331,25 +331,29 @@ def generate_text(model: TransformerModel,
         with torch.no_grad():
             # Process the initial sequence to build up the KV cache
             initial_mask = generate_square_subsequent_mask(current_sequence.size(1))
-            with torch.autocast(device_type='mps', dtype=torch.float16):
-                _ = model(current_sequence, initial_mask, use_cache=True)
+            output = model(current_sequence, initial_mask, use_cache=True)
             
             # Generate new tokens one at a time
             for i in range(length):
-                with torch.autocast(device_type='mps', dtype=torch.float16):
-                    if data_loader.config.token_type == TokenType.BPE:
-                        # For BPE, use the last token index directly
-                        next_input = current_sequence[:, -1:]
-                    else:
-                        # For char/word, use one-hot of last token
-                        next_input = current_sequence[:, -1:, :]
-                    
-                    output = model(next_input, None, use_cache=True)
-                    next_token_logits = output[0, -1, :] / temperature
-                    next_token_probs = torch.softmax(next_token_logits, dim=0)
+                if data_loader.config.token_type == TokenType.BPE:
+                    # For BPE, use the last token index directly
+                    next_input = current_sequence[:, -1:]
+                else:
+                    # For char/word, use one-hot of last token
+                    next_input = current_sequence[:, -1:, :]
+                
+                output = model(next_input, None, use_cache=True)
+                next_token_logits = output[0, -1, :] / temperature
+                next_token_probs = torch.softmax(next_token_logits, dim=0)
                 
                 # Sample from the distribution
                 next_token = torch.multinomial(next_token_probs, 1).item()
+                
+                # Ensure synchronization based on device type
+                if device.type == 'cuda':
+                    torch.cuda.synchronize()
+                elif device.type == 'mps':
+                    torch.mps.synchronize()
                 
                 # Decode and print the new token immediately
                 new_token = data_loader.decode_tokens([next_token])
@@ -366,8 +370,7 @@ def generate_text(model: TransformerModel,
                 
                 # Periodically clear memory (but not KV cache)
                 if i % 100 == 0:
-                    torch.mps.synchronize()
-                    gc.collect()
+                    clear_memory()
         
         print()  # New line at the end
         

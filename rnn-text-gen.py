@@ -126,8 +126,12 @@ def generate_text(model: RNNModel,
         current_idx = indices[0]
         print(f"\n{start_text}", end='', flush=True)
     
-    # Initialize hidden state
+    # Initialize hidden state and move to correct device
     hidden = model.init_hidden(batch_size=1)
+    if isinstance(hidden, tuple):
+        hidden = tuple(h.to(device) for h in hidden)
+    else:
+        hidden = hidden.to(device)
     
     # Generate tokens
     with torch.no_grad():
@@ -151,14 +155,15 @@ def generate_text(model: RNNModel,
             # Sample from the distribution
             current_idx = torch.multinomial(probs, 1).item()
             
-            # Ensure synchronization before decoding
+            # Move tensors to CPU for decoding
             if device.type == 'cuda':
                 torch.cuda.synchronize()
-            elif device.type == 'mps':
-                torch.mps.synchronize()
+                current_idx_cpu = current_idx
+            else:
+                current_idx_cpu = current_idx
             
             # Decode and print the new token immediately
-            new_token = data_loader.decode_tokens([current_idx])
+            new_token = data_loader.decode_tokens([current_idx_cpu])
             print(new_token, end='', flush=True)
     
     print()  # New line at the end
