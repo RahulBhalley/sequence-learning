@@ -57,7 +57,9 @@ class DataInfo:
 class ShakespeareDataLoader:
     def __init__(self, config: DataConfig):
         self.config = config
-        self.device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+        # Use global device from transformer-text-gen.py
+        from transformer_text_gen import device
+        self.device = device
         print(f"DataLoader using device: {self.device}")
         
         # Initialize BPE tokenizer if using BPE

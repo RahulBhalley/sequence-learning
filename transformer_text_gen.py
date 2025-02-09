@@ -17,6 +17,9 @@ from torch.utils.tensorboard import SummaryWriter
 import gc
 import argparse
 
+# Global variables
+device = None  # Will be set in main()
+
 def get_available_devices():
     """Get list of available devices for argparse choices"""
     devices = ['cpu']
@@ -25,6 +28,12 @@ def get_available_devices():
     if torch.backends.mps.is_available():
         devices.append('mps')
     return devices
+
+def set_device(device_name: str):
+    """Set the global device"""
+    global device
+    device = torch.device(device_name)
+    print(f"Using device: {device}")
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train a Transformer model on Shakespeare text')
@@ -1051,9 +1060,8 @@ def main():
     """Main function to run the training"""
     args = parse_args()
     
-    # Set device
-    device = torch.device(args.device)
-    print(f"Using device: {device}")
+    # Set global device
+    set_device(args.device)
     
     # Data configuration
     data_config = DataConfig(
