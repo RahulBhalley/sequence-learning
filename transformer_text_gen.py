@@ -123,6 +123,9 @@ class PositionalEncoding(nn.Module):
         pe[:, 0, 0::2] = torch.sin(position * div_term)
         pe[:, 0, 1::2] = torch.cos(position * div_term)
         self.register_buffer('pe', pe)
+        
+        # Move to device
+        self.to(device)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -137,8 +140,8 @@ class TransformerModel(nn.Module):
         self.config = config
         
         # Token embedding
-        self.embedding = nn.Embedding(vocab_size, config.d_model)
-        self.pos_encoder = PositionalEncoding(config.d_model, config.max_seq_length)
+        self.embedding = nn.Embedding(vocab_size, config.d_model).to(device)
+        self.pos_encoder = PositionalEncoding(config.d_model, config.max_seq_length).to(device)
         
         # Transformer encoder with KV caching
         encoder_layers = []
@@ -149,28 +152,31 @@ class TransformerModel(nn.Module):
                     num_heads=config.nhead,
                     dropout=config.dropout,
                     batch_first=True
-                ),
-                'norm1': nn.LayerNorm(config.d_model),
+                ).to(device),
+                'norm1': nn.LayerNorm(config.d_model).to(device),
                 'ff': nn.Sequential(
                     nn.Linear(config.d_model, config.dim_feedforward),
                     nn.ReLU(),
                     nn.Dropout(config.dropout),
                     nn.Linear(config.dim_feedforward, config.d_model)
-                ),
-                'norm2': nn.LayerNorm(config.d_model),
-                'dropout': nn.Dropout(config.dropout)
+                ).to(device),
+                'norm2': nn.LayerNorm(config.d_model).to(device),
+                'dropout': nn.Dropout(config.dropout).to(device)
             })
             encoder_layers.append(layer)
-        self.encoder_layers = nn.ModuleList(encoder_layers)
+        self.encoder_layers = nn.ModuleList(encoder_layers).to(device)
         
         # Output layer
-        self.decoder = nn.Linear(config.d_model, vocab_size)
+        self.decoder = nn.Linear(config.d_model, vocab_size).to(device)
         
         # Initialize parameters
         self.init_weights()
         
         # KV cache
         self.kv_cache = None
+        
+        # Move entire model to device
+        self.to(device)
     
     def init_weights(self) -> None:
         """Initialize weights following the Transformer paper recommendations.
@@ -433,7 +439,7 @@ def train_epoch(model: TransformerModel,
                 scheduler: Any,
                 criterion: nn.Module,
                 clip_grad_norm: float) -> float:
-    """Train for one epoch with gradient accumulation and MPS memory optimization"""
+    """Train for one epoch with gradient accumulation and memory optimization"""
     model.train()
     total_loss = 0
     optimizer.zero_grad(set_to_none=True)  # Initial gradient clear
@@ -441,6 +447,9 @@ def train_epoch(model: TransformerModel,
     # Calculate total steps for this epoch
     total_batches = len(data_loader.get_train_batches())
     accumulation_steps = model.config.gradient_accumulation_steps
+    
+    # Move criterion to device
+    criterion = criterion.to(device)
     
     pbar = tqdm(data_loader.get_train_batches(), desc='Training')
     
@@ -456,25 +465,27 @@ def train_epoch(model: TransformerModel,
             # Create mask for the batch with correct number of heads
             mask = generate_square_subsequent_mask(x.size(1), x.size(0), model.config.nhead)
             
-            # Process in half precision for MPS efficiency
-            with torch.autocast(device_type='mps', dtype=torch.float16):
-                # Forward pass
-                if data_loader.config.token_type == TokenType.BPE:
-                    output = model(x, mask)  # x is already indices for BPE
-                else:
-                    output = model(x.argmax(dim=-1), mask)  # Convert one-hot to indices
-                
-                output = output.view(-1, data_loader.vocab_size)
-                y = y.view(-1)
-                loss = criterion(output, y) / accumulation_steps  # Scale loss for accumulation
-                
-                # Backward pass
-                loss.backward()
+            # Forward pass
+            if data_loader.config.token_type == TokenType.BPE:
+                output = model(x, mask)  # x is already indices for BPE
+            else:
+                output = model(x.argmax(dim=-1), mask)  # Convert one-hot to indices
+            
+            output = output.view(-1, data_loader.vocab_size)
+            y = y.view(-1)
+            loss = criterion(output, y) / accumulation_steps  # Scale loss for accumulation
+            
+            # Backward pass
+            loss.backward()
             
             # Gradient accumulation and optimization step
             if (batch_idx + 1) % accumulation_steps == 0 or (batch_idx + 1 == total_batches):
-                # Synchronize before gradient clipping for MPS
-                torch.mps.synchronize()
+                # Synchronize before gradient clipping
+                if device.type == 'cuda':
+                    torch.cuda.synchronize()
+                elif device.type == 'mps':
+                    torch.mps.synchronize()
+                
                 torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm)
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
@@ -510,7 +521,10 @@ def train_epoch(model: TransformerModel,
     
     # Handle any remaining gradients
     if (batch_idx + 1) % accumulation_steps != 0:
-        torch.mps.synchronize()
+        if device.type == 'cuda':
+            torch.cuda.synchronize()
+        elif device.type == 'mps':
+            torch.mps.synchronize()
         torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm)
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
@@ -520,10 +534,13 @@ def train_epoch(model: TransformerModel,
 def validate(model: TransformerModel,
             data_loader: ShakespeareDataLoader,
             criterion: nn.Module) -> float:
-    """Validate the model with MPS optimization and batching"""
+    """Validate the model"""
     model.eval()
     total_loss = 0
     batch_size = data_loader.config.batch_size * 2  # Use larger batches for validation
+    
+    # Move criterion to device
+    criterion = criterion.to(device)
     
     with torch.no_grad():
         for batch_idx in data_loader.get_val_batches():
@@ -538,16 +555,15 @@ def validate(model: TransformerModel,
                 # Create mask for the batch with correct number of heads
                 mask = generate_square_subsequent_mask(x.size(1), x.size(0), model.config.nhead)
                 
-                # Process in half precision for MPS efficiency
-                with torch.autocast(device_type='mps', dtype=torch.float16):
-                    if data_loader.config.token_type == TokenType.BPE:
-                        output = model(x, mask)  # x is already indices for BPE
-                    else:
-                        output = model(x.argmax(dim=-1), mask)  # Convert one-hot to indices
-                    
-                    output = output.view(-1, data_loader.vocab_size)
-                    y = y.view(-1)
-                    loss = criterion(output, y)
+                # Forward pass
+                if data_loader.config.token_type == TokenType.BPE:
+                    output = model(x, mask)  # x is already indices for BPE
+                else:
+                    output = model(x.argmax(dim=-1), mask)  # Convert one-hot to indices
+                
+                output = output.view(-1, data_loader.vocab_size)
+                y = y.view(-1)
+                loss = criterion(output, y)
                 
                 total_loss += loss.item() * (x.size(0) / batch_size)
                 
