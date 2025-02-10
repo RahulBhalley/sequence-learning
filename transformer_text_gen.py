@@ -19,18 +19,50 @@ import argparse
 from accelerate import Accelerator
 from accelerate.utils import set_seed
 
-# Initialize accelerator
-accelerator = Accelerator()
-device = accelerator.device
+# Initialize accelerator with device selection
+def init_accelerator(device_str: str = None):
+    """Initialize accelerator with optional device override"""
+    if device_str and device_str != 'auto':
+        # Manual device override
+        if device_str == 'cpu':
+            device_placement_policy = 'cpu'
+        elif device_str.startswith('cuda'):
+            device_placement_policy = 'cuda'
+        elif device_str == 'mps':
+            device_placement_policy = 'mps'
+        else:
+            raise ValueError(f"Unsupported device: {device_str}")
+        
+        accelerator = Accelerator(device_placement_policy=device_placement_policy)
+    else:
+        # Let Accelerate automatically choose the best device
+        accelerator = Accelerator()
+    
+    return accelerator
 
 def get_available_devices():
-    """Get list of available devices for argparse choices - Not needed with accelerate"""
-    return ['auto']  # Let accelerate handle device selection
+    """Get list of available devices for argparse choices"""
+    devices = ['auto', 'cpu']
+    
+    # Check CUDA availability
+    if torch.cuda.is_available():
+        devices.extend([f'cuda:{i}' for i in range(torch.cuda.device_count())])
+    
+    # Check MPS availability
+    if torch.backends.mps.is_available():
+        devices.append('mps')
+    
+    return devices
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train a Transformer model on Shakespeare text')
     
-    # Device handling is now managed by accelerate
+    # Device selection
+    parser.add_argument('--device', type=str, default='auto', 
+                       choices=get_available_devices(),
+                       help='Device to use (auto, cpu, cuda:N, or mps)')
+    
+    # Other parameters
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
     
     # Model architecture
@@ -1069,6 +1101,12 @@ def compare_models(data_config: DataConfig,
 def main():
     """Main function to run the training"""
     args = parse_args()
+    
+    # Initialize accelerator with device selection
+    global accelerator, device
+    accelerator = init_accelerator(args.device)
+    device = accelerator.device
+    print(f"Using device: {device}")
     
     # Set random seed
     set_seed(args.seed)
