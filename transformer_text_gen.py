@@ -97,6 +97,9 @@ def parse_args():
     parser.add_argument('--token_type', type=str, default='bpe', choices=['char', 'word', 'bpe'], help='Tokenization type')
     parser.add_argument('--bpe_encoding', type=str, default='gpt2', help='BPE encoding type')
     
+    # Generation parameters
+    parser.add_argument('--gen_length', type=int, default=500, help='Length of text to generate during inference')
+    
     # Other parameters
     parser.add_argument('--save_dir', type=str, default='model_comparison', help='Directory to save models')
     
@@ -1202,7 +1205,7 @@ def main():
         model=model,
         data_loader=data_loader,
         start_text='The' if data_config.token_type == TokenType.WORD else 'T',
-        length=500
+        length=args.gen_length
     )
     print("-" * 50)
 
