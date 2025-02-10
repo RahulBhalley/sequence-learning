@@ -112,6 +112,7 @@ def parse_args():
     
     # Generation parameters
     parser.add_argument('--gen_length', type=int, default=500, help='Length of text to generate during inference')
+    parser.add_argument('--gen_every', type=int, default=10, help='Generate sample text every N epochs (0 to disable)')
     
     # Other parameters
     parser.add_argument('--save_dir', type=str, default='model_comparison', help='Directory to save models')
@@ -735,7 +736,8 @@ def resume_or_start_training(model: TransformerModel,
                            scheduler: Any,
                            criterion: nn.Module,
                            n_epochs: int,
-                           save_dir: str = 'checkpoints') -> Dict[str, Any]:
+                           save_dir: str = 'checkpoints',
+                           gen_every: int = 1) -> Dict[str, Any]:
     """Resume training from latest checkpoint or start fresh."""
     latest_checkpoint = find_latest_checkpoint(save_dir)
     start_epoch = 0
@@ -763,7 +765,8 @@ def resume_or_start_training(model: TransformerModel,
         n_epochs=n_epochs,
         save_dir=save_dir,
         start_epoch=start_epoch,
-        initial_history=history
+        initial_history=history,
+        gen_every=gen_every
     )
 
 def train_model(model: TransformerModel,
@@ -774,7 +777,8 @@ def train_model(model: TransformerModel,
                 n_epochs: int,
                 save_dir: str = 'checkpoints',
                 start_epoch: int = 0,
-                initial_history: Optional[Dict] = None):
+                initial_history: Optional[Dict] = None,
+                gen_every: int = 1):
     """Main training loop with memory optimization"""
     print("Starting training...")
     os.makedirs(save_dir, exist_ok=True)
@@ -836,8 +840,8 @@ def train_model(model: TransformerModel,
                 )
                 clear_memory()  # Clear memory after saving checkpoint
             
-            # Generate sample text periodically
-            if epoch % 1 == 0:  # Reduce frequency of text generation
+            # Generate sample text periodically if enabled
+            if gen_every > 0 and epoch % gen_every == 0:
                 print("\nGenerated text sample:")
                 print("-" * 50)
                 start_text = 'T' if data_loader.config.token_type == TokenType.CHAR else 'The'
@@ -1202,6 +1206,7 @@ def main():
     print(f"Batch Size: {args.batch_size}")
     print(f"Gradient Accumulation Steps: {args.gradient_accumulation_steps}")
     print(f"Effective Batch Size: {args.batch_size * args.gradient_accumulation_steps}")
+    print(f"Generate text every {args.gen_every} epochs" if args.gen_every > 0 else "Text generation during training disabled")
     
     # Train model
     print("\nStarting training...")
@@ -1212,7 +1217,8 @@ def main():
         scheduler=scheduler,
         criterion=criterion,
         n_epochs=args.n_epochs,
-        save_dir=args.save_dir
+        save_dir=args.save_dir,
+        gen_every=args.gen_every
     )
     
     # Print final results
