@@ -20,23 +20,30 @@ from accelerate import Accelerator
 from accelerate.utils import set_seed
 
 # Initialize accelerator with device selection
-def init_accelerator(device_str: str = None):
-    """Initialize accelerator with optional device override"""
+def init_accelerator(device_str: str = None, mixed_precision: str = 'no'):
+    """Initialize accelerator with optional device override and mixed precision"""
     if device_str and device_str != 'auto':
         # Manual device override
         if device_str == 'cpu':
             device_placement_policy = 'cpu'
+            # Force no mixed precision for CPU
+            mixed_precision = 'no'
         elif device_str.startswith('cuda'):
             device_placement_policy = 'cuda'
         elif device_str == 'mps':
             device_placement_policy = 'mps'
+            # Force no mixed precision for MPS
+            mixed_precision = 'no'
         else:
             raise ValueError(f"Unsupported device: {device_str}")
         
-        accelerator = Accelerator(device_placement_policy=device_placement_policy)
+        accelerator = Accelerator(
+            device_placement_policy=device_placement_policy,
+            mixed_precision=mixed_precision
+        )
     else:
         # Let Accelerate automatically choose the best device
-        accelerator = Accelerator()
+        accelerator = Accelerator(mixed_precision=mixed_precision)
     
     return accelerator, accelerator.device
 
@@ -47,8 +54,9 @@ device = None
 def initialize_globals(args):
     """Initialize global accelerator and device"""
     global accelerator, device
-    accelerator, device = init_accelerator(args.device)
+    accelerator, device = init_accelerator(args.device, args.mixed_precision)
     print(f"Using device: {device}")
+    print(f"Mixed precision mode: {args.mixed_precision}")
     return accelerator, device
 
 def get_available_devices():
@@ -72,6 +80,11 @@ def parse_args():
     parser.add_argument('--device', type=str, default='auto', 
                        choices=get_available_devices(),
                        help='Device to use (auto, cpu, cuda:N, or mps)')
+    
+    # Mixed precision settings
+    parser.add_argument('--mixed_precision', type=str, default='no',
+                       choices=['no', 'fp16', 'bf16'],
+                       help='Mixed precision mode (no, fp16, or bf16). Note: bf16 requires recent NVIDIA GPU')
     
     # Other parameters
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
@@ -1175,11 +1188,20 @@ def main():
     
     criterion = nn.CrossEntropyLoss()
     
-    # Prepare for distributed training with accelerate
+    # Prepare for distributed training with accelerate and mixed precision
     model, optimizer, scheduler = accelerator.prepare(model, optimizer, scheduler)
     
     # Force an initial scheduler step to set the starting learning rate
     scheduler.step()
+    
+    # Print training configuration
+    print("\nTraining Configuration:")
+    print(f"Device: {device}")
+    print(f"Mixed Precision: {args.mixed_precision}")
+    print(f"Model Parameters: {model.get_model_size():,}")
+    print(f"Batch Size: {args.batch_size}")
+    print(f"Gradient Accumulation Steps: {args.gradient_accumulation_steps}")
+    print(f"Effective Batch Size: {args.batch_size * args.gradient_accumulation_steps}")
     
     # Train model
     print("\nStarting training...")
