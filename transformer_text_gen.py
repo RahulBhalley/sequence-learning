@@ -125,11 +125,11 @@ def parse_args():
     parser.add_argument('--warmup_steps', type=int, default=4000, help='Number of warmup steps')
     parser.add_argument('--clip_grad_norm', type=float, default=0.5, help='Gradient clipping norm')
     parser.add_argument('--gradient_accumulation_steps', type=int, default=8, help='Number of steps to accumulate gradients')
-    parser.add_argument('--max_seq_length', type=int, default=2048, help='Maximum sequence length')
+    parser.add_argument('--max_context_window', type=int, default=2048, help='Maximum context window size')
     parser.add_argument('--n_epochs', type=int, default=100, help='Number of training epochs')
     
     # Data configuration
-    parser.add_argument('--seq_length', type=int, default=128, help='Sequence length for training')
+    parser.add_argument('--context_window', type=int, default=128, help='Context window size for training')
     parser.add_argument('--token_type', type=str, default='bpe', choices=['char', 'word', 'bpe'], help='Tokenization type')
     parser.add_argument('--bpe_encoding', type=str, default='gpt2', help='BPE encoding type')
     
@@ -167,7 +167,7 @@ class ModelConfig:
     dropout: float
     
     # Positional encoding
-    max_seq_length: int = 2048
+    max_context_window: int = 2048
     
     # Training parameters
     learning_rate: float = 0.0001
@@ -213,7 +213,7 @@ class TransformerModel(nn.Module):
         
         # Token embedding
         self.embedding = nn.Embedding(vocab_size, config.d_model).to(device)
-        self.pos_encoder = PositionalEncoding(config.d_model, config.max_seq_length).to(device)
+        self.pos_encoder = PositionalEncoding(config.d_model, config.max_context_window).to(device)
         
         # Transformer encoder with KV caching
         encoder_layers = []
@@ -1177,7 +1177,7 @@ def main():
     # Data configuration
     data_config = DataConfig(
         token_type=TokenType[args.token_type.upper()],
-        seq_length=args.seq_length,
+        context_window=args.context_window,
         batch_size=args.batch_size,
         bpe_encoding=args.bpe_encoding
     )
@@ -1195,7 +1195,7 @@ def main():
         num_layers=args.num_layers,
         dim_feedforward=args.dim_feedforward,
         dropout=args.dropout,
-        max_seq_length=args.max_seq_length,
+        max_context_window=args.max_context_window,
         learning_rate=args.learning_rate,
         batch_size=args.batch_size,
         warmup_steps=args.warmup_steps,

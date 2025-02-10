@@ -29,7 +29,7 @@ class TokenType(Enum):
 @dataclass
 class DataConfig:
     token_type: TokenType
-    seq_length: int
+    context_window: int
     batch_size: int
     bpe_encoding: str = "gpt2"  # Default to GPT-2's BPE encoding
     
@@ -37,7 +37,7 @@ class DataConfig:
         """Convert config to dictionary with enum handling."""
         return {
             'token_type': self.token_type.value,
-            'seq_length': self.seq_length,
+            'context_window': self.context_window,
             'batch_size': self.batch_size,
             'bpe_encoding': self.bpe_encoding
         }
@@ -155,13 +155,13 @@ class ShakespeareDataLoader:
         
         # Process in smaller chunks for MPS memory constraints
         chunk_size = 500  # Smaller chunk size for MPS
-        for i in range(0, len(data) - self.config.seq_length, chunk_size * self.config.seq_length):
-            end_idx = min(i + chunk_size * self.config.seq_length, len(data) - self.config.seq_length)
+        for i in range(0, len(data) - self.config.context_window, chunk_size * self.config.context_window):
+            end_idx = min(i + chunk_size * self.config.context_window, len(data) - self.config.context_window)
             
             # Create sequences for this chunk
-            for j in range(i, end_idx, self.config.seq_length):
-                seq = data[j:j + self.config.seq_length]
-                target = data[j + 1:j + self.config.seq_length + 1]
+            for j in range(i, end_idx, self.config.context_window):
+                seq = data[j:j + self.config.context_window]
+                target = data[j + 1:j + self.config.context_window + 1]
                 sequences.append(seq)
                 targets.append(target)
             
