@@ -553,9 +553,12 @@ def train_epoch(model: TransformerModel,
     model.train()
     total_loss = 0
     
+    # Get config from model (handle DDP case)
+    model_config = model.module.config if hasattr(model, 'module') else model.config
+    
     # Calculate total steps for this epoch
     total_batches = len(data_loader.get_train_batches())
-    accumulation_steps = model.config.gradient_accumulation_steps
+    accumulation_steps = model_config.gradient_accumulation_steps
     
     # Move criterion to device (will be handled by accelerator)
     criterion = accelerator.prepare(criterion)
@@ -582,7 +585,7 @@ def train_epoch(model: TransformerModel,
             x, y = accelerator.prepare(x, y)
             
             # Create mask for the batch with correct number of heads
-            mask = generate_square_subsequent_mask(x.size(1), x.size(0), model.config.nhead)
+            mask = generate_square_subsequent_mask(x.size(1), x.size(0), model_config.nhead)
             mask = accelerator.prepare(mask)
             
             # Forward pass
@@ -863,6 +866,9 @@ def train_model(model: TransformerModel,
     print("Starting training...")
     os.makedirs(save_dir, exist_ok=True)
     
+    # Get config from model (handle DDP case)
+    model_config = model.module.config if hasattr(model, 'module') else model.config
+    
     try:
         # Initialize TensorBoard writer
         tensorboard_dir = os.path.join(save_dir, 'tensorboard')
@@ -884,7 +890,7 @@ def train_model(model: TransformerModel,
             final_epoch = epoch
             
             # Train and validate
-            train_loss = train_epoch(model, data_loader, optimizer, scheduler, criterion, model.config.clip_grad_norm)
+            train_loss = train_epoch(model, data_loader, optimizer, scheduler, criterion, model_config.clip_grad_norm)
             clear_memory()  # Clear memory after training
             
             val_loss = validate(model, data_loader, criterion)
