@@ -441,6 +441,8 @@ def train_epoch(model: TransformerModel,
                 clip_grad_norm: float) -> float:
     """Train for one epoch with gradient accumulation and memory optimization"""
     model.train()
+    print(f"\nModel device: {next(model.parameters()).device}")
+    
     total_loss = 0
     optimizer.zero_grad(set_to_none=True)  # Initial gradient clear
     
@@ -450,6 +452,7 @@ def train_epoch(model: TransformerModel,
     
     # Move criterion to device
     criterion = criterion.to(device)
+    print(f"Criterion device: {next(criterion.parameters()).device if hasattr(criterion, 'parameters') else device}")
     
     pbar = tqdm(data_loader.get_train_batches(), desc='Training')
     
@@ -462,18 +465,35 @@ def train_epoch(model: TransformerModel,
             if x is None:  # Skip incomplete batches
                 continue
             
+            print(f"\nBatch {batch_idx} tensor devices:")
+            print(f"Input tensor (x) device: {x.device}")
+            print(f"Target tensor (y) device: {y.device}")
+            
             # Create mask for the batch with correct number of heads
             mask = generate_square_subsequent_mask(x.size(1), x.size(0), model.config.nhead)
+            print(f"Attention mask device: {mask.device}")
             
             # Forward pass
             if data_loader.config.token_type == TokenType.BPE:
                 output = model(x, mask)  # x is already indices for BPE
             else:
-                output = model(x.argmax(dim=-1), mask)  # Convert one-hot to indices
+                x_indices = x.argmax(dim=-1)
+                print(f"Input indices device: {x_indices.device}")
+                output = model(x_indices, mask)  # Convert one-hot to indices
+            
+            print(f"Output tensor device: {output.device}")
             
             output = output.view(-1, data_loader.vocab_size)
             y = y.view(-1)
             loss = criterion(output, y) / accumulation_steps  # Scale loss for accumulation
+            print(f"Loss tensor device: {loss.device}")
+            
+            # Print optimizer state devices
+            print("\nOptimizer state devices:")
+            for group in optimizer.param_groups:
+                for p in group['params']:
+                    if p.grad is not None:
+                        print(f"Parameter grad device: {p.grad.device}")
             
             # Backward pass
             loss.backward()
@@ -485,6 +505,12 @@ def train_epoch(model: TransformerModel,
                     torch.cuda.synchronize()
                 elif device.type == 'mps':
                     torch.mps.synchronize()
+                
+                # Print gradient devices before clipping
+                print("\nGradient devices before clipping:")
+                for name, param in model.named_parameters():
+                    if param.grad is not None:
+                        print(f"{name} grad device: {param.grad.device}")
                 
                 torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm)
                 optimizer.step()
@@ -506,6 +532,14 @@ def train_epoch(model: TransformerModel,
             
         except Exception as e:
             print(f"Error in batch {batch_idx}: {e}")
+            # Print device information when error occurs
+            print("\nDevice information at error:")
+            print(f"Model device: {next(model.parameters()).device}")
+            if 'x' in locals(): print(f"Input tensor device: {x.device}")
+            if 'y' in locals(): print(f"Target tensor device: {y.device}")
+            if 'mask' in locals(): print(f"Mask tensor device: {mask.device}")
+            if 'output' in locals(): print(f"Output tensor device: {output.device}")
+            if 'loss' in locals(): print(f"Loss tensor device: {loss.device}")
             continue
             
         finally:
