@@ -422,11 +422,13 @@ def generate_text(model: TransformerModel,
                  length: int = 500,
                  temperature: float = 0.8) -> None:
     """Generate text using the trained model with device-appropriate optimization"""
-    model.eval()
+    # Get the underlying model if using DDP
+    unwrapped_model = accelerator.unwrap_model(model)
+    unwrapped_model.eval()
     
     try:
         # Clear any existing KV cache
-        model.clear_kv_cache()
+        unwrapped_model.clear_kv_cache()
         
         # Initialize with start text or random token
         if start_text is None:
@@ -450,7 +452,7 @@ def generate_text(model: TransformerModel,
         with torch.no_grad():
             # Process the initial sequence to build up the KV cache
             initial_mask = generate_square_subsequent_mask(current_sequence.size(1))
-            output = model(current_sequence, initial_mask, use_cache=True)
+            output = unwrapped_model(current_sequence, initial_mask, use_cache=True)
             
             # Generate new tokens one at a time
             for i in range(length):
@@ -461,7 +463,7 @@ def generate_text(model: TransformerModel,
                     # For char/word, use one-hot of last token
                     next_input = current_sequence[:, -1:, :]
                 
-                output = model(next_input, None, use_cache=True)
+                output = unwrapped_model(next_input, None, use_cache=True)
                 next_token_logits = output[0, -1, :] / temperature
                 next_token_probs = torch.softmax(next_token_logits, dim=0)
                 
@@ -495,7 +497,7 @@ def generate_text(model: TransformerModel,
         
     finally:
         # Clean up
-        model.clear_kv_cache()
+        unwrapped_model.clear_kv_cache()
         clear_memory()
 
 class NoamLRScheduler:
