@@ -38,7 +38,18 @@ def init_accelerator(device_str: str = None):
         # Let Accelerate automatically choose the best device
         accelerator = Accelerator()
     
-    return accelerator
+    return accelerator, accelerator.device
+
+# Initialize globals
+accelerator = None
+device = None
+
+def initialize_globals(args):
+    """Initialize global accelerator and device"""
+    global accelerator, device
+    accelerator, device = init_accelerator(args.device)
+    print(f"Using device: {device}")
+    return accelerator, device
 
 def get_available_devices():
     """Get list of available devices for argparse choices"""
@@ -1102,11 +1113,8 @@ def main():
     """Main function to run the training"""
     args = parse_args()
     
-    # Initialize accelerator with device selection
-    global accelerator, device
-    accelerator = init_accelerator(args.device)
-    device = accelerator.device
-    print(f"Using device: {device}")
+    # Initialize accelerator and device first
+    accelerator, device = initialize_globals(args)
     
     # Set random seed
     set_seed(args.seed)
@@ -1119,8 +1127,8 @@ def main():
         bpe_encoding=args.bpe_encoding
     )
     
-    # Load data
-    data_loader = ShakespeareDataLoader(data_config)
+    # Load data with explicit device
+    data_loader = ShakespeareDataLoader(data_config, device=device)
     print(f"Vocabulary size: {data_loader.vocab_size}")
     print(f"Training sequences: {data_loader.train_size}")
     print(f"Validation sequences: {data_loader.val_size}")

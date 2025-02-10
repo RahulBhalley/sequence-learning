@@ -57,11 +57,10 @@ class DataInfo:
     token_to_index: Dict[str, int]
 
 class ShakespeareDataLoader:
-    def __init__(self, config: DataConfig):
+    def __init__(self, config: DataConfig, device: torch.device = None):
         self.config = config
-        # Use global device from transformer-text-gen.py
-        from transformer_text_gen import device as global_device
-        self.device = global_device
+        # Use provided device or default to CPU
+        self.device = device if device is not None else torch.device('cpu')
         print(f"DataLoader using device: {self.device}")
         
         # Initialize BPE tokenizer if using BPE
