@@ -452,7 +452,8 @@ def train_epoch(model: TransformerModel,
     
     # Move criterion to device
     criterion = criterion.to(device)
-    print(f"Criterion device: {next(criterion.parameters()).device if hasattr(criterion, 'parameters') else device}")
+    print(f"Criterion device: {device}")  # Criterion follows global device
+    print(f"Data loader device: {data_loader.device}")  # Print data loader device
     
     pbar = tqdm(data_loader.get_train_batches(), desc='Training')
     
@@ -464,6 +465,10 @@ def train_epoch(model: TransformerModel,
                                        batch_num)
             if x is None:  # Skip incomplete batches
                 continue
+            
+            # Ensure input tensors are on correct device
+            x = x.to(device)
+            y = y.to(device)
             
             print(f"\nBatch {batch_idx} tensor devices:")
             print(f"Input tensor (x) device: {x.device}")

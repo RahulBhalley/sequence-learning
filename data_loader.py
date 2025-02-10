@@ -60,8 +60,8 @@ class ShakespeareDataLoader:
     def __init__(self, config: DataConfig):
         self.config = config
         # Use global device from transformer-text-gen.py
-        from transformer_text_gen import device
-        self.device = device
+        from transformer_text_gen import device as global_device
+        self.device = global_device
         print(f"DataLoader using device: {self.device}")
         
         # Initialize BPE tokenizer if using BPE
