@@ -40,7 +40,7 @@ def parse_args():
     
     # Device
     available_devices = get_available_devices()
-    parser.add_argument('--device', type=str, default='cpu', choices=available_devices,
+    parser.add_argument('--device', type=str, default='cpu',
                        help='Device to use for training (cpu/cuda/mps)')
     
     # Model architecture
