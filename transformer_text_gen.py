@@ -657,6 +657,9 @@ def validate(model: TransformerModel,
     total_loss = 0
     batch_size = data_loader.config.batch_size * 2  # Use larger batches for validation
     
+    # Get the underlying model if using DDP
+    unwrapped_model = accelerator.unwrap_model(model)
+    
     # Move criterion to device (will be handled by accelerator)
     criterion = accelerator.prepare(criterion)
     
@@ -674,7 +677,7 @@ def validate(model: TransformerModel,
                 x, y = accelerator.prepare(x, y)
                 
                 # Create mask for the batch with correct number of heads
-                mask = generate_square_subsequent_mask(x.size(1), x.size(0), model.config.nhead)
+                mask = generate_square_subsequent_mask(x.size(1), x.size(0), unwrapped_model.config.nhead)
                 mask = accelerator.prepare(mask)
                 
                 # Forward pass
@@ -733,6 +736,9 @@ def save_checkpoint(model: TransformerModel,
                    data_config: DataConfig,
                    history: Dict[str, List] = None):
     """Save checkpoint with enhanced information."""
+    # Get the underlying model if using DDP
+    unwrapped_model = accelerator.unwrap_model(model)
+    
     checkpoint = {
         'epoch': epoch,
         'model_state_dict': model.state_dict(),
@@ -748,9 +754,9 @@ def save_checkpoint(model: TransformerModel,
         } if scheduler is not None else None,
         'train_loss': train_loss,
         'val_loss': val_loss,
-        'model_config': model.config.to_dict(),
+        'model_config': unwrapped_model.config.to_dict(),
         'data_config': data_config.to_dict(),
-        'model_size': model.get_model_size(),
+        'model_size': unwrapped_model.get_model_size(),
         'timestamp': datetime.now().isoformat(),
         'history': history,
         'learning_rate': optimizer.param_groups[0]['lr']  # Current learning rate
@@ -764,9 +770,9 @@ def save_checkpoint(model: TransformerModel,
         'epoch': epoch,
         'train_loss': train_loss,
         'val_loss': val_loss,
-        'model_config': model.config.to_dict(),
+        'model_config': unwrapped_model.config.to_dict(),
         'data_config': data_config.to_dict(),
-        'model_size': model.get_model_size(),
+        'model_size': unwrapped_model.get_model_size(),
         'timestamp': checkpoint['timestamp'],
         'learning_rate': checkpoint['learning_rate'],
         'scheduler_type': checkpoint['scheduler_type'],
