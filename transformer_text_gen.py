@@ -16,32 +16,22 @@ import math
 from torch.utils.tensorboard import SummaryWriter
 import gc
 import argparse
+from accelerate import Accelerator
+from accelerate.utils import set_seed
 
-# Global variables
-device = None  # Will be set in main()
+# Initialize accelerator
+accelerator = Accelerator()
+device = accelerator.device
 
 def get_available_devices():
-    """Get list of available devices for argparse choices"""
-    devices = ['cpu']
-    if torch.cuda.is_available():
-        devices.append('cuda')
-    if torch.backends.mps.is_available():
-        devices.append('mps')
-    return devices
-
-def set_device(device_name: str):
-    """Set the global device"""
-    global device
-    device = torch.device(device_name)
-    print(f"Using device: {device}")
+    """Get list of available devices for argparse choices - Not needed with accelerate"""
+    return ['auto']  # Let accelerate handle device selection
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train a Transformer model on Shakespeare text')
     
-    # Device
-    available_devices = get_available_devices()
-    parser.add_argument('--device', type=str, default='cpu',
-                       help='Device to use for training (cpu/cuda/mps)')
+    # Device handling is now managed by accelerate
+    parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
     
     # Model architecture
     parser.add_argument('--d_model', type=int, default=512, help='Model dimension')
@@ -68,10 +58,6 @@ def parse_args():
     parser.add_argument('--save_dir', type=str, default='model_comparison', help='Directory to save models')
     
     args = parser.parse_args()
-    
-    # Validate device
-    if args.device not in available_devices:
-        parser.error(f"Device {args.device} is not available. Available devices: {available_devices}")
     
     return args
 
@@ -441,26 +427,16 @@ def train_epoch(model: TransformerModel,
                 clip_grad_norm: float) -> float:
     """Train for one epoch with gradient accumulation and memory optimization"""
     model.train()
-    model_device = next(model.parameters()).device
-    # print(f"\nInitial devices:")
-    # print(f"Model device: {model_device}")
-    # print(f"Global device: {device}")
-    # print(f"DataLoader device: {data_loader.device}")
-    
-    # if model_device != device:
-    #     print(f"WARNING: Model device ({model_device}) does not match global device ({device})")
-    
     total_loss = 0
-    optimizer.zero_grad(set_to_none=True)  # Initial gradient clear
     
     # Calculate total steps for this epoch
     total_batches = len(data_loader.get_train_batches())
     accumulation_steps = model.config.gradient_accumulation_steps
     
-    # Move criterion to device
-    criterion = criterion.to(device)
+    # Move criterion to device (will be handled by accelerator)
+    criterion = accelerator.prepare(criterion)
     
-    pbar = tqdm(data_loader.get_train_batches(), desc='Training')
+    pbar = tqdm(data_loader.get_train_batches(), desc='Training', disable=not accelerator.is_local_main_process)
     
     for batch_idx, batch_num in enumerate(pbar):
         try:
@@ -471,68 +447,37 @@ def train_epoch(model: TransformerModel,
             if x is None:  # Skip incomplete batches
                 continue
             
-            # Ensure input tensors are on correct device
-            x = x.to(device)
-            y = y.to(device)
-            
-            # Device consistency check for input tensors
-            if x.device != device or y.device != device:
-                print(f"\nWARNING: Input tensor device mismatch in batch {batch_idx}:")
-                print(f"x device: {x.device}, y device: {y.device}, expected: {device}")
+            # Move tensors to appropriate device (handled by accelerator)
+            x, y = accelerator.prepare(x, y)
             
             # Create mask for the batch with correct number of heads
             mask = generate_square_subsequent_mask(x.size(1), x.size(0), model.config.nhead)
-            
-            if mask.device != device:
-                print(f"\nWARNING: Attention mask device mismatch in batch {batch_idx}:")
-                print(f"mask device: {mask.device}, expected: {device}")
+            mask = accelerator.prepare(mask)
             
             # Forward pass
-            if data_loader.config.token_type == TokenType.BPE:
-                output = model(x, mask)  # x is already indices for BPE
-            else:
-                x_indices = x.argmax(dim=-1)
-                if x_indices.device != device:
-                    print(f"\nWARNING: Input indices device mismatch in batch {batch_idx}:")
-                    print(f"x_indices device: {x_indices.device}, expected: {device}")
-                output = model(x_indices, mask)  # Convert one-hot to indices
-            
-            if output.device != device:
-                print(f"\nWARNING: Output tensor device mismatch in batch {batch_idx}:")
-                print(f"output device: {output.device}, expected: {device}")
-            
-            output = output.view(-1, data_loader.vocab_size)
-            y = y.view(-1)
-            loss = criterion(output, y) / accumulation_steps  # Scale loss for accumulation
-            
-            if loss.device != device:
-                print(f"\nWARNING: Loss tensor device mismatch in batch {batch_idx}:")
-                print(f"loss device: {loss.device}, expected: {device}")
-            
-            # Backward pass
-            loss.backward()
-            
-            # Gradient accumulation and optimization step
-            if (batch_idx + 1) % accumulation_steps == 0 or (batch_idx + 1 == total_batches):
-                # Synchronize before gradient clipping
-                if device.type == 'cuda':
-                    torch.cuda.synchronize()
-                elif device.type == 'mps':
-                    torch.mps.synchronize()
+            with accelerator.accumulate(model):
+                if data_loader.config.token_type == TokenType.BPE:
+                    output = model(x, mask)  # x is already indices for BPE
+                else:
+                    x_indices = x.argmax(dim=-1)
+                    output = model(x_indices, mask)  # Convert one-hot to indices
                 
-                # Check gradient devices
-                for name, param in model.named_parameters():
-                    if param.grad is not None and param.grad.device != device:
-                        print(f"\nWARNING: Gradient device mismatch for {name}:")
-                        print(f"grad device: {param.grad.device}, expected: {device}")
+                output = output.view(-1, data_loader.vocab_size)
+                y = y.view(-1)
+                loss = criterion(output, y)
                 
-                torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm)
+                # Scale loss for gradient accumulation
+                loss = loss / accumulation_steps
+                
+                # Backward pass
+                accelerator.backward(loss)
+                
+                if accelerator.sync_gradients:
+                    accelerator.clip_grad_norm_(model.parameters(), clip_grad_norm)
+                
                 optimizer.step()
-                optimizer.zero_grad(set_to_none=True)
-                
-                # Update learning rate
-                if scheduler is not None:
-                    scheduler.step()  # Step after each effective batch (accumulated gradients)
+                scheduler.step()  # Step after each effective batch
+                optimizer.zero_grad()
             
             # Get current learning rate for display
             current_lr = scheduler.get_last_lr()[0] if scheduler is not None else optimizer.param_groups[0]['lr']
@@ -546,14 +491,6 @@ def train_epoch(model: TransformerModel,
             
         except Exception as e:
             print(f"Error in batch {batch_idx}: {e}")
-            # Print device information when error occurs
-            print("\nDevice information at error:")
-            print(f"Model device: {next(model.parameters()).device}")
-            if 'x' in locals(): print(f"Input tensor device: {x.device}")
-            if 'y' in locals(): print(f"Target tensor device: {y.device}")
-            if 'mask' in locals(): print(f"Mask tensor device: {mask.device}")
-            if 'output' in locals(): print(f"Output tensor device: {output.device}")
-            if 'loss' in locals(): print(f"Loss tensor device: {loss.device}")
             continue
             
         finally:
@@ -567,16 +504,6 @@ def train_epoch(model: TransformerModel,
             if (batch_idx + 1) % 10 == 0:  # Clear memory less frequently
                 clear_memory()
     
-    # Handle any remaining gradients
-    if (batch_idx + 1) % accumulation_steps != 0:
-        if device.type == 'cuda':
-            torch.cuda.synchronize()
-        elif device.type == 'mps':
-            torch.mps.synchronize()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm)
-        optimizer.step()
-        optimizer.zero_grad(set_to_none=True)
-    
     return total_loss / len(data_loader.get_train_batches())
 
 def validate(model: TransformerModel,
@@ -587,8 +514,8 @@ def validate(model: TransformerModel,
     total_loss = 0
     batch_size = data_loader.config.batch_size * 2  # Use larger batches for validation
     
-    # Move criterion to device
-    criterion = criterion.to(device)
+    # Move criterion to device (will be handled by accelerator)
+    criterion = accelerator.prepare(criterion)
     
     with torch.no_grad():
         for batch_idx in data_loader.get_val_batches():
@@ -600,8 +527,12 @@ def validate(model: TransformerModel,
                 if x is None:  # Skip incomplete batches
                     continue
                 
+                # Move tensors to appropriate device
+                x, y = accelerator.prepare(x, y)
+                
                 # Create mask for the batch with correct number of heads
                 mask = generate_square_subsequent_mask(x.size(1), x.size(0), model.config.nhead)
+                mask = accelerator.prepare(mask)
                 
                 # Forward pass
                 if data_loader.config.token_type == TokenType.BPE:
@@ -612,6 +543,9 @@ def validate(model: TransformerModel,
                 output = output.view(-1, data_loader.vocab_size)
                 y = y.view(-1)
                 loss = criterion(output, y)
+                
+                # Gather loss from all processes
+                loss = accelerator.gather(loss).mean()
                 
                 total_loss += loss.item() * (x.size(0) / batch_size)
                 
@@ -1136,8 +1070,8 @@ def main():
     """Main function to run the training"""
     args = parse_args()
     
-    # Set global device
-    set_device(args.device)
+    # Set random seed
+    set_seed(args.seed)
     
     # Data configuration
     data_config = DataConfig(
@@ -1172,7 +1106,7 @@ def main():
     model = TransformerModel(
         vocab_size=data_loader.vocab_size,
         config=model_config
-    ).to(device)
+    )
     
     # Setup optimizer with Transformer-specific parameters
     optimizer = optim.Adam(
@@ -1190,10 +1124,13 @@ def main():
         factor=2.0
     )
     
+    criterion = nn.CrossEntropyLoss()
+    
+    # Prepare for distributed training with accelerate
+    model, optimizer, scheduler = accelerator.prepare(model, optimizer, scheduler)
+    
     # Force an initial scheduler step to set the starting learning rate
     scheduler.step()
-    
-    criterion = nn.CrossEntropyLoss()
     
     # Train model
     print("\nStarting training...")
