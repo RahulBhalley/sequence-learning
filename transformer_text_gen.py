@@ -442,13 +442,13 @@ def train_epoch(model: TransformerModel,
     """Train for one epoch with gradient accumulation and memory optimization"""
     model.train()
     model_device = next(model.parameters()).device
-    print(f"\nInitial devices:")
-    print(f"Model device: {model_device}")
-    print(f"Global device: {device}")
-    print(f"DataLoader device: {data_loader.device}")
+    # print(f"\nInitial devices:")
+    # print(f"Model device: {model_device}")
+    # print(f"Global device: {device}")
+    # print(f"DataLoader device: {data_loader.device}")
     
-    if model_device != device:
-        print(f"WARNING: Model device ({model_device}) does not match global device ({device})")
+    # if model_device != device:
+    #     print(f"WARNING: Model device ({model_device}) does not match global device ({device})")
     
     total_loss = 0
     optimizer.zero_grad(set_to_none=True)  # Initial gradient clear
