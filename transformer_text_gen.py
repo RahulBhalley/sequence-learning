@@ -1229,9 +1229,10 @@ def main():
     
     # Load data with explicit device
     data_loader = ShakespeareDataLoader(data_config, device=device)
-    print(f"Vocabulary size: {data_loader.vocab_size}")
-    print(f"Training sequences: {data_loader.train_size}")
-    print(f"Validation sequences: {data_loader.val_size}")
+    if accelerator.is_local_main_process:
+        print(f"Vocabulary size: {data_loader.vocab_size}")
+        print(f"Training sequences: {data_loader.train_size}")
+        print(f"Validation sequences: {data_loader.val_size}")
     
     # Create model configuration
     model_config = ModelConfig(
@@ -1253,6 +1254,9 @@ def main():
         vocab_size=data_loader.vocab_size,
         config=model_config
     )
+    
+    # Get model size before DDP wrapping
+    model_size = model.get_model_size()
     
     # Setup optimizer with Transformer-specific parameters
     optimizer = optim.Adam(
@@ -1278,18 +1282,20 @@ def main():
     # Force an initial scheduler step to set the starting learning rate
     scheduler.step()
     
-    # Print training configuration
-    print("\nTraining Configuration:")
-    print(f"Device: {device}")
-    print(f"Mixed Precision: {args.mixed_precision}")
-    print(f"Model Parameters: {model.get_model_size():,}")
-    print(f"Batch Size: {args.batch_size}")
-    print(f"Gradient Accumulation Steps: {args.gradient_accumulation_steps}")
-    print(f"Effective Batch Size: {args.batch_size * args.gradient_accumulation_steps}")
-    print(f"Generate text every {args.gen_every} epochs" if args.gen_every > 0 else "Text generation during training disabled")
+    # Print training configuration only on main process
+    if accelerator.is_local_main_process:
+        print("\nTraining Configuration:")
+        print(f"Device: {device}")
+        print(f"Mixed Precision: {args.mixed_precision}")
+        print(f"Model Parameters: {model_size:,}")
+        print(f"Batch Size: {args.batch_size}")
+        print(f"Gradient Accumulation Steps: {args.gradient_accumulation_steps}")
+        print(f"Effective Batch Size: {args.batch_size * args.gradient_accumulation_steps}")
+        print(f"Generate text every {args.gen_every} epochs" if args.gen_every > 0 else "Text generation during training disabled")
     
     # Train model
-    print("\nStarting training...")
+    if accelerator.is_local_main_process:
+        print("\nStarting training...")
     model_results = resume_or_start_training(
         model=model,
         data_loader=data_loader,
@@ -1301,21 +1307,24 @@ def main():
         gen_every=args.gen_every
     )
     
-    # Print final results
-    print("\nTraining completed!")
-    print(f"Best validation loss: {model_results['best_val_loss']:.4f}")
-    print(f"Training time: {model_results['training_time']:.2f} seconds")
-    
-    # Generate final sample
-    print("\nGenerating final sample:")
-    print("-" * 50)
-    generate_text(
-        model=model,
-        data_loader=data_loader,
-        start_text='The' if data_config.token_type == TokenType.WORD else 'T',
-        length=args.gen_length
-    )
-    print("-" * 50)
+    # Print final results only on main process
+    if accelerator.is_local_main_process:
+        print("\nTraining completed!")
+        print(f"Best validation loss: {model_results['best_val_loss']:.4f}")
+        print(f"Training time: {model_results['training_time']:.2f} seconds")
+        
+        # Generate final sample
+        print("\nGenerating final sample:")
+        print("-" * 50)
+        # Get the unwrapped model for generation
+        unwrapped_model = accelerator.unwrap_model(model)
+        generate_text(
+            model=unwrapped_model,
+            data_loader=data_loader,
+            start_text='The' if data_config.token_type == TokenType.WORD else 'T',
+            length=args.gen_length
+        )
+        print("-" * 50)
 
 if __name__ == '__main__':
     main()
