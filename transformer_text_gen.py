@@ -421,12 +421,28 @@ def generate_text(model: TransformerModel,
                  start_text: Optional[str] = None,
                  length: int = 500,
                  temperature: float = 0.8) -> None:
-    """Generate text using the trained model with device-appropriate optimization"""
+    """Generate text using the trained model with single GPU optimization"""
+    # Only generate text on the main process
+    if not accelerator.is_local_main_process:
+        return
+    
     # Get the underlying model if using DDP
     unwrapped_model = accelerator.unwrap_model(model)
-    unwrapped_model.eval()
+    
+    # Move model to CPU or first GPU for generation
+    if torch.cuda.is_available():
+        generation_device = torch.device('cuda:0')
+    else:
+        generation_device = torch.device('cpu')
+    
+    # Store original device for model restoration
+    original_device = next(unwrapped_model.parameters()).device
     
     try:
+        # Move model to generation device
+        unwrapped_model = unwrapped_model.to(generation_device)
+        unwrapped_model.eval()
+        
         # Clear any existing KV cache
         unwrapped_model.clear_kv_cache()
         
@@ -440,18 +456,18 @@ def generate_text(model: TransformerModel,
             current_indices = data_loader.encode_tokens(start_text)
             print(f"\n{start_text}", end='', flush=True)
         
-        # Convert to tensor and move to device
+        # Convert to tensor and move to generation device
         if data_loader.config.token_type == TokenType.BPE:
-            current_sequence = torch.tensor(current_indices, dtype=torch.long).unsqueeze(0).to(device)
+            current_sequence = torch.tensor(current_indices, dtype=torch.long).unsqueeze(0).to(generation_device)
         else:
             # Create one-hot encoded tensor for char/word tokens
-            x = torch.zeros(1, len(current_indices), data_loader.vocab_size, device=device)
+            x = torch.zeros(1, len(current_indices), data_loader.vocab_size, device=generation_device)
             x[0, range(len(current_indices)), current_indices] = 1
             current_sequence = x
         
         with torch.no_grad():
             # Process the initial sequence to build up the KV cache
-            initial_mask = generate_square_subsequent_mask(current_sequence.size(1))
+            initial_mask = generate_square_subsequent_mask(current_sequence.size(1)).to(generation_device)
             output = unwrapped_model(current_sequence, initial_mask, use_cache=True)
             
             # Generate new tokens one at a time
@@ -471,9 +487,9 @@ def generate_text(model: TransformerModel,
                 next_token = torch.multinomial(next_token_probs, 1).item()
                 
                 # Ensure synchronization based on device type
-                if device.type == 'cuda':
+                if generation_device.type == 'cuda':
                     torch.cuda.synchronize()
-                elif device.type == 'mps':
+                elif generation_device.type == 'mps':
                     torch.mps.synchronize()
                 
                 # Decode and print the new token immediately
@@ -482,10 +498,10 @@ def generate_text(model: TransformerModel,
                 
                 # Append to sequence
                 if data_loader.config.token_type == TokenType.BPE:
-                    next_token_tensor = torch.tensor([[next_token]], device=device)
+                    next_token_tensor = torch.tensor([[next_token]], device=generation_device)
                     current_sequence = torch.cat([current_sequence, next_token_tensor], dim=1)
                 else:
-                    next_token_tensor = torch.zeros(1, 1, data_loader.vocab_size, device=device)
+                    next_token_tensor = torch.zeros(1, 1, data_loader.vocab_size, device=generation_device)
                     next_token_tensor[0, 0, next_token] = 1
                     current_sequence = torch.cat([current_sequence, next_token_tensor], dim=1)
                 
@@ -498,6 +514,8 @@ def generate_text(model: TransformerModel,
     finally:
         # Clean up
         unwrapped_model.clear_kv_cache()
+        # Move model back to original device
+        unwrapped_model = unwrapped_model.to(original_device)
         clear_memory()
 
 class NoamLRScheduler:
