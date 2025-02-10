@@ -19,6 +19,14 @@ import argparse
 from accelerate import Accelerator
 from accelerate.utils import set_seed
 
+# Import TPU-specific modules conditionally
+try:
+    import torch_xla.core.xla_model as xm
+    import torch_xla.distributed.parallel_loader as pl
+    HAS_TPU = True
+except ImportError:
+    HAS_TPU = False
+
 # Initialize accelerator with device selection
 def init_accelerator(device_str: str = None, mixed_precision: str = 'no'):
     """Initialize accelerator with optional device override and mixed precision"""
@@ -34,12 +42,19 @@ def init_accelerator(device_str: str = None, mixed_precision: str = 'no'):
             device_placement_policy = 'mps'
             # Force no mixed precision for MPS
             mixed_precision = 'no'
+        elif device_str == 'tpu':
+            device_placement_policy = 'tpu'
+            # TPU supports bfloat16 by default
+            if mixed_precision == 'no':
+                mixed_precision = 'bf16'
         else:
             raise ValueError(f"Unsupported device: {device_str}")
         
         accelerator = Accelerator(
             device_placement_policy=device_placement_policy,
-            mixed_precision=mixed_precision
+            mixed_precision=mixed_precision,
+            # Enable TPU-specific optimizations
+            dispatch_batches=device_str == 'tpu'
         )
     else:
         # Let Accelerate automatically choose the best device
@@ -70,6 +85,14 @@ def get_available_devices():
     # Check MPS availability
     if torch.backends.mps.is_available():
         devices.append('mps')
+    
+    # Check TPU availability
+    try:
+        import torch_xla.core.xla_model as xm
+        if xm.xrt_world_size() > 0:
+            devices.append('tpu')
+    except ImportError:
+        pass
     
     return devices
 
@@ -127,6 +150,9 @@ def clear_memory():
         # MPS doesn't have explicit cache clearing like CUDA
         # but we can force synchronization
         torch.mps.synchronize()
+    elif HAS_TPU and device.type == 'xla':
+        # Synchronize TPU operations
+        xm.mark_step()
     gc.collect()
 
 batch_size = 4
@@ -496,7 +522,12 @@ def train_epoch(model: TransformerModel,
     # Move criterion to device (will be handled by accelerator)
     criterion = accelerator.prepare(criterion)
     
+    # Create progress bar
     pbar = tqdm(data_loader.get_train_batches(), desc='Training', disable=not accelerator.is_local_main_process)
+    
+    # Wrap data loader with TPU parallel loader if using TPU
+    if HAS_TPU and device.type == 'xla':
+        pbar = pl.ParallelLoader(pbar, [device]).per_device_loader(device)
     
     for batch_idx, batch_num in enumerate(pbar):
         try:
@@ -548,6 +579,10 @@ def train_epoch(model: TransformerModel,
                 'loss': f'{loss.item() * accumulation_steps:.4f}',
                 'lr': f'{current_lr:.2e}'
             })
+            
+            # TPU-specific: mark step for XLA compilation
+            if HAS_TPU and device.type == 'xla':
+                xm.mark_step()
             
         except Exception as e:
             print(f"Error in batch {batch_idx}: {e}")
