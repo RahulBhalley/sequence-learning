@@ -38,15 +38,19 @@ def init_accelerator(device_str: str = None, mixed_precision: str = 'no'):
             mixed_precision = 'no'
         elif device_str.startswith('cuda'):
             device_placement_policy = 'cuda'
+            # Enable multi-GPU if available
+            multi_gpu = torch.cuda.device_count() > 1
         elif device_str == 'mps':
             device_placement_policy = 'mps'
             # Force no mixed precision for MPS
             mixed_precision = 'no'
+            multi_gpu = False
         elif device_str == 'tpu':
             device_placement_policy = 'tpu'
             # TPU supports bfloat16 by default
             if mixed_precision == 'no':
                 mixed_precision = 'bf16'
+            multi_gpu = False
         else:
             raise ValueError(f"Unsupported device: {device_str}")
         
@@ -54,11 +58,20 @@ def init_accelerator(device_str: str = None, mixed_precision: str = 'no'):
             device_placement_policy=device_placement_policy,
             mixed_precision=mixed_precision,
             # Enable TPU-specific optimizations
-            dispatch_batches=device_str == 'tpu'
+            dispatch_batches=device_str == 'tpu',
+            # Enable multi-GPU if available
+            split_batches=multi_gpu,
+            gradient_accumulation_steps=model_config.gradient_accumulation_steps if 'model_config' in globals() else 8
         )
     else:
         # Let Accelerate automatically choose the best device
-        accelerator = Accelerator(mixed_precision=mixed_precision)
+        # Check for multi-GPU
+        multi_gpu = torch.cuda.is_available() and torch.cuda.device_count() > 1
+        accelerator = Accelerator(
+            mixed_precision=mixed_precision,
+            split_batches=multi_gpu,
+            gradient_accumulation_steps=model_config.gradient_accumulation_steps if 'model_config' in globals() else 8
+        )
     
     return accelerator, accelerator.device
 
@@ -70,7 +83,18 @@ def initialize_globals(args):
     """Initialize global accelerator and device"""
     global accelerator, device
     accelerator, device = init_accelerator(args.device, args.mixed_precision)
-    print(f"Using device: {device}")
+    
+    # Print distributed training info
+    if accelerator.num_processes > 1:
+        print(f"\nDistributed Training Configuration:")
+        print(f"Number of GPUs: {accelerator.num_processes}")
+        print(f"Process rank: {accelerator.process_index}")
+        print(f"Local process rank: {accelerator.local_process_index}")
+        print(f"Device placement: {accelerator.device}")
+        if accelerator.distributed_type == "MULTI_GPU":
+            print("Using DistributedDataParallel (DDP)")
+    
+    print(f"\nUsing device: {device}")
     print(f"Mixed precision mode: {args.mixed_precision}")
     return accelerator, device
 
@@ -99,10 +123,14 @@ def get_available_devices():
 def parse_args():
     parser = argparse.ArgumentParser(description='Train a Transformer model on Shakespeare text')
     
-    # Device selection
+    # Device and distributed training settings
     parser.add_argument('--device', type=str, default='auto', 
                        choices=get_available_devices(),
                        help='Device to use (auto, cpu, cuda:N, or mps)')
+    parser.add_argument('--multi_gpu', action='store_true',
+                       help='Enable multi-GPU training using DistributedDataParallel')
+    parser.add_argument('--local_rank', type=int, default=-1,
+                       help='Local rank for distributed training (automatically set by torch.distributed.launch)')
     
     # Mixed precision settings
     parser.add_argument('--mixed_precision', type=str, default='no',
@@ -120,7 +148,7 @@ def parse_args():
     parser.add_argument('--dropout', type=float, default=0.1, help='Dropout rate')
     
     # Training parameters
-    parser.add_argument('--batch_size', type=int, default=4, help='Batch size')
+    parser.add_argument('--batch_size', type=int, default=4, help='Batch size per GPU')
     parser.add_argument('--learning_rate', type=float, default=0.0001, help='Learning rate')
     parser.add_argument('--warmup_steps', type=int, default=4000, help='Number of warmup steps')
     parser.add_argument('--clip_grad_norm', type=float, default=0.5, help='Gradient clipping norm')
@@ -141,6 +169,16 @@ def parse_args():
     parser.add_argument('--save_dir', type=str, default='model_comparison', help='Directory to save models')
     
     args = parser.parse_args()
+    
+    # Adjust batch size based on number of GPUs if multi-GPU is enabled
+    if args.multi_gpu and torch.cuda.is_available():
+        n_gpus = torch.cuda.device_count()
+        if n_gpus > 1:
+            print(f"\nUsing {n_gpus} GPUs")
+            print(f"Batch size per GPU: {args.batch_size}")
+            print(f"Total batch size: {args.batch_size * n_gpus}")
+            print(f"Gradient accumulation steps: {args.gradient_accumulation_steps}")
+            print(f"Effective total batch size: {args.batch_size * n_gpus * args.gradient_accumulation_steps}")
     
     return args
 
@@ -522,8 +560,10 @@ def train_epoch(model: TransformerModel,
     # Move criterion to device (will be handled by accelerator)
     criterion = accelerator.prepare(criterion)
     
-    # Create progress bar
-    pbar = tqdm(data_loader.get_train_batches(), desc='Training', disable=not accelerator.is_local_main_process)
+    # Create progress bar (only show on main process)
+    pbar = tqdm(data_loader.get_train_batches(), 
+                desc='Training', 
+                disable=not accelerator.is_local_main_process)
     
     # Wrap data loader with TPU parallel loader if using TPU
     if HAS_TPU and device.type == 'xla':
@@ -575,10 +615,13 @@ def train_epoch(model: TransformerModel,
             
             # Update stats (scale loss back up for reporting)
             total_loss += loss.item() * accumulation_steps
-            pbar.set_postfix({
-                'loss': f'{loss.item() * accumulation_steps:.4f}',
-                'lr': f'{current_lr:.2e}'
-            })
+            
+            # Only update progress bar on main process
+            if accelerator.is_local_main_process:
+                pbar.set_postfix({
+                    'loss': f'{loss.item() * accumulation_steps:.4f}',
+                    'lr': f'{current_lr:.2e}'
+                })
             
             # TPU-specific: mark step for XLA compilation
             if HAS_TPU and device.type == 'xla':
@@ -599,6 +642,8 @@ def train_epoch(model: TransformerModel,
             if (batch_idx + 1) % 10 == 0:  # Clear memory less frequently
                 clear_memory()
     
+    # Gather and average loss across all processes
+    total_loss = accelerator.gather(torch.tensor(total_loss, device=device)).mean().item()
     return total_loss / len(data_loader.get_train_batches())
 
 def validate(model: TransformerModel,
